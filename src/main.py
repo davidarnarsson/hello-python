@@ -1,6 +1,7 @@
 import pyaudio
-from functools import reduce, lru_cache
-from math import sin, pow, pi, atan, tan
+import time
+import oscillators as osc
+from intervaltree import IntervalTree, Interval
 
 SAMPLE_RATE = 44100
 BIT_DEPTH = 16
@@ -12,7 +13,7 @@ NOTES = ["a", "a#", "b", "c", "c#", "d", "d#", "e", "f", "f#", "g", "g#"]
 
 
 def hz(note, octave=4):
-    val = A * (1.059463 ** ((NOTES.index(note) + octave * 12) - 48))
+    val = 13.7 * 1.059463 ** (NOTES.index(note) + (octave + 1) * 12)
     print(f"{note}{octave} = {val}")
 
     return val
@@ -36,26 +37,29 @@ class Sequencer:
     sortkey = lambda n: n.start + n.length
 
     def __init__(self):
-        self.notes = sorted([], key=Sequencer.sortkey)
+        self.notes = IntervalTree()
 
     def add(self, note):
-        self.notes.append(note)
+        self.notes.addi(note.start, note.start + note.length, note)
 
     def remove(self, note):
-        self.notes.remove(note)
+        self.notes.removei(note.start, note.start + note.length, note)
 
     def length(self):
-        return self.notes[-1].start + self.notes[-1].length
+        return self.notes.end()
 
     def sample_at(self, t):
+
         # again, bad
-        current = [n for n in self.notes if n.start <= t and n.start + n.length > t]
+        current = self.notes.at(t)
 
         acc = 0
         for note in current:
-            note_pos = t - note.start
+            note_pos = t - note.begin
             acc += (
-                osc(note_pos, note.pitch) * note.velocity * adsr(note_pos, note.length)
+                osc.sine(note_pos, note.data.pitch)
+                * note.data.velocity
+                * adsr(note_pos, note.end - note.begin)
             ) * (1 / len(current))
 
         return acc
@@ -71,21 +75,6 @@ def adsr(i, n):
         return lerp(1, 0, (pct - 0.65) / 0.35)
 
     return 1
-
-
-def sine(t, note):
-    return sin(pi * t * note)
-
-
-def cot(x):
-    return 1 / (tan(x) + 0.000001)
-
-
-def saw(t, note):
-    return (-2 / pi) * atan(cot(t * note))
-
-
-osc = saw
 
 
 def to_byte(sample):
@@ -108,6 +97,8 @@ def main():
         Note(hz("c#", octave=5), 0, duration),
         Note(hz("e", octave=5), 0, duration),
         Note(hz("g#", octave=5), 0, duration),
+        Note(hz("g#", octave=6), 0, duration),
+        Note(hz("a", octave=6), 0, duration),
     ]
 
     [seq.add(note) for note in notes]
@@ -121,11 +112,18 @@ def main():
         output=True,
     )
 
-    # print(f"Sequencer length: {seq.length()} sample_at: {seq.sample_at(0.5)}")
-    for i in range(int(seq.length() * SAMPLE_RATE * CHANNELS)):
-        sample = seq.sample_at(i / (SAMPLE_RATE * CHANNELS))
+    start = time.perf_counter()
+    samples = [
+        seq.sample_at(i / (SAMPLE_RATE * CHANNELS))
+        for i in range(int(seq.length() * SAMPLE_RATE * CHANNELS))
+    ]
+    end = time.perf_counter()
 
-        stream.write(to_byte(sample))
+    print(f"Sampling took {end - start}s")
+
+    # print(f"Sequencer length: {seq.length()} sample_at: {seq.sample_at(0.5)}")
+
+    [stream.write(to_byte(sample)) for sample in samples]
 
     stream.stop_stream()
     stream.close()
